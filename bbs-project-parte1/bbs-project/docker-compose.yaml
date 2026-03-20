@@ -1,0 +1,189 @@
+version: "3.9"
+
+services:
+
+  # ==================== PYTHON ====================
+  server-python:
+    build: ./server-python
+    container_name: server-python
+    environment:
+      - PORT=5550
+    volumes:
+      - data-python:/data
+    networks:
+      - bbs-net
+
+  client-python-1:
+    build: ./client-python
+    container_name: client-python-1
+    environment:
+      - BOT_NAME=bot-py-1
+      - SERVER_HOST=server-python
+      - SERVER_PORT=5550
+    depends_on:
+      - server-python
+    networks:
+      - bbs-net
+
+  client-python-2:
+    build: ./client-python
+    container_name: client-python-2
+    environment:
+      - BOT_NAME=bot-py-2
+      - SERVER_HOST=server-python
+      - SERVER_PORT=5550
+    depends_on:
+      - server-python
+    networks:
+      - bbs-net
+
+  # ==================== GO ====================
+  server-go:
+    build: ./server-go
+    container_name: server-go
+    environment:
+      - PORT=5551
+    volumes:
+      - data-go:/data
+    networks:
+      - bbs-net
+
+  client-go-1:
+    build: ./client-go
+    container_name: client-go-1
+    environment:
+      - BOT_NAME=bot-go-1
+      - SERVER_HOST=server-go
+      - SERVER_PORT=5551
+    depends_on:
+      - server-go
+    networks:
+      - bbs-net
+
+  client-go-2:
+    build: ./client-go
+    container_name: client-go-2
+    environment:
+      - BOT_NAME=bot-go-2
+      - SERVER_HOST=server-go
+      - SERVER_PORT=5551
+    depends_on:
+      - server-go
+    networks:
+      - bbs-net
+
+  # ==================== C# ====================
+  server-csharp:
+    build: ./server-csharp
+    container_name: server-csharp
+    environment:
+      - PORT=5552
+    volumes:
+      - data-csharp:/data
+    networks:
+      - bbs-net
+
+  client-csharp-1:
+    build: ./client-csharp
+    container_name: client-csharp-1
+    environment:
+      - BOT_NAME=bot-cs-1
+      - SERVER_HOST=server-csharp
+      - SERVER_PORT=5552
+    depends_on:
+      - server-csharp
+    networks:
+      - bbs-net
+
+  client-csharp-2:
+    build: ./client-csharp
+    container_name: client-csharp-2
+    environment:
+      - BOT_NAME=bot-cs-2
+      - SERVER_HOST=server-csharp
+      - SERVER_PORT=5552
+    depends_on:
+      - server-csharp
+    networks:
+      - bbs-net
+
+  # ==================== C ====================
+  server-c:
+    build: ./server-c
+    container_name: server-c
+    environment:
+      - PORT=5553
+    volumes:
+      - data-c:/data
+    networks:
+      - bbs-net
+
+  client-c-1:
+    build: ./client-c
+    container_name: client-c-1
+    environment:
+      - BOT_NAME=bot-c-1
+      - SERVER_HOST=server-c
+      - SERVER_PORT=5553
+    depends_on:
+      - server-c
+    networks:
+      - bbs-net
+
+  client-c-2:
+    build: ./client-c
+    container_name: client-c-2
+    environment:
+      - BOT_NAME=bot-c-2
+      - SERVER_HOST=server-c
+      - SERVER_PORT=5553
+    depends_on:
+      - server-c
+    networks:
+      - bbs-net
+
+  # ==================== LUA ====================
+  server-lua:
+    build: ./server-lua
+    container_name: server-lua
+    environment:
+      - PORT=5554
+    volumes:
+      - data-lua:/data
+    networks:
+      - bbs-net
+
+  client-lua-1:
+    build: ./client-lua
+    container_name: client-lua-1
+    environment:
+      - BOT_NAME=bot-lua-1
+      - SERVER_HOST=server-lua
+      - SERVER_PORT=5554
+    depends_on:
+      - server-lua
+    networks:
+      - bbs-net
+
+  client-lua-2:
+    build: ./client-lua
+    container_name: client-lua-2
+    environment:
+      - BOT_NAME=bot-lua-2
+      - SERVER_HOST=server-lua
+      - SERVER_PORT=5554
+    depends_on:
+      - server-lua
+    networks:
+      - bbs-net
+
+networks:
+  bbs-net:
+    driver: bridge
+
+volumes:
+  data-python:
+  data-go:
+  data-csharp:
+  data-c:
+  data-lua:
