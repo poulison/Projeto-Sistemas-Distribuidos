@@ -12,8 +12,7 @@
 
 static sqlite3 *db;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
+// helpers 
 static double now_ts(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -37,7 +36,7 @@ static double get_double(mpack_node_t root, const char *key) {
     return now_ts();
 }
 
-// ── banco de dados ────────────────────────────────────────────────────────────
+// banco de dados
 
 static void init_db(void) {
     mkdir("/data", 0755);
@@ -55,7 +54,7 @@ static void init_db(void) {
         NULL, NULL, NULL);
 }
 
-// ── construção de resposta msgpack ────────────────────────────────────────────
+//construção de resposta msgpack 
 
 static char *make_resp(const char *status, const char *message,
                        char **data, int data_len, size_t *out_size)
@@ -93,7 +92,7 @@ static char *make_resp(const char *status, const char *message,
     return buf;
 }
 
-// ── handlers ─────────────────────────────────────────────────────────────────
+//handlers
 
 static char *handle_login(const char *username, double ts, size_t *out_size) {
     if (username[0] == '\0')
@@ -165,7 +164,7 @@ static char *handle_list_channels(size_t *out_size) {
     return resp;
 }
 
-// ── main ─────────────────────────────────────────────────────────────────────
+// main 
 
 int main(void) {
     const char *port_env = getenv("PORT");

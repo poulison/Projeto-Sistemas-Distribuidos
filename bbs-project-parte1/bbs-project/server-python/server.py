@@ -8,7 +8,7 @@ PORT   = int(os.getenv("PORT", "5550"))
 DB_PATH = "/data/server.db"
 
 
-# ── banco de dados ──────────────────────────────────────────────────────────
+#  banco de dados 
 
 def init_db(conn):
     c = conn.cursor()
@@ -31,7 +31,7 @@ def init_db(conn):
     conn.commit()
 
 
-# ── handlers ────────────────────────────────────────────────────────────────
+# handlers 
 
 def handle_login(data, conn):
     username  = str(data.get("username", "")).strip()
@@ -72,7 +72,7 @@ def handle_list_channels(conn):
     return {"status": "ok", "message": "OK", "data": channels, "timestamp": time.time()}
 
 
-# ── main ────────────────────────────────────────────────────────────────────
+#  main 
 
 def main():
     os.makedirs("/data", exist_ok=True)

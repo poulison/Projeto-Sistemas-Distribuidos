@@ -6,7 +6,7 @@ local os      = require "os"
 local PORT    = tonumber(os.getenv("PORT") or "5554")
 local DB_PATH = "/data/server.db"
 
--- ── banco de dados ────────────────────────────────────────────────────────────
+--  banco de dados 
 
 local db
 
@@ -25,7 +25,7 @@ local function init_db()
     ]])
 end
 
--- ── helpers ───────────────────────────────────────────────────────────────────
+--  helpers
 
 local function now_ts()
     -- lua 5.3+ tem math.type, usamos socket.gettime se disponível
@@ -42,7 +42,7 @@ local function make_err(message)
     return mp.pack({ status = "error", message = message, timestamp = now_ts() })
 end
 
--- ── handlers ─────────────────────────────────────────────────────────────────
+--  handlers 
 
 local function handle_login(username, ts)
     if not username or username == "" then
@@ -90,7 +90,7 @@ local function handle_list_channels()
     return make_ok("OK", channels)
 end
 
--- ── main ─────────────────────────────────────────────────────────────────────
+-- main 
 
 init_db()
 

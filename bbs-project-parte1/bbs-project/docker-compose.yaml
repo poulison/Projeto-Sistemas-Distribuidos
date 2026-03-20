@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
 
-  # ==================== PYTHON ====================
+  #  PYTHON 
   server-python:
     build: ./server-python
     container_name: server-python
@@ -37,7 +37,7 @@ services:
     networks:
       - bbs-net
 
-  # ==================== GO ====================
+  #  GO 
   server-go:
     build: ./server-go
     container_name: server-go
@@ -72,7 +72,7 @@ services:
     networks:
       - bbs-net
 
-  # ==================== C# ====================
+  #  C# 
   server-csharp:
     build: ./server-csharp
     container_name: server-csharp
@@ -107,7 +107,7 @@ services:
     networks:
       - bbs-net
 
-  # ==================== C ====================
+  #  C 
   server-c:
     build: ./server-c
     container_name: server-c
@@ -142,7 +142,7 @@ services:
     networks:
       - bbs-net
 
-  # ==================== LUA ====================
+  #  LUA 
   server-lua:
     build: ./server-lua
     container_name: server-lua

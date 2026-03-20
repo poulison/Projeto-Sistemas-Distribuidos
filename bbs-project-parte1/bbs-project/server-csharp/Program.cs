@@ -7,7 +7,7 @@ using Microsoft.Data.Sqlite;
 using NetMQ;
 using NetMQ.Sockets;
 
-// ── modelos ──────────────────────────────────────────────────────────────────
+// modelos 
 
 [MessagePackObject]
 public class InMsg
@@ -27,7 +27,7 @@ public class OutMsg
     [Key("timestamp")] public double        Timestamp { get; set; }
 }
 
-// ── servidor ─────────────────────────────────────────────────────────────────
+// servidor 
 
 class Server
 {
@@ -40,7 +40,7 @@ class Server
     static OutMsg Err(string msg)  => new() { Status = "error", Message = msg,  Timestamp = NowTS() };
     static OutMsg Ok(string msg)   => new() { Status = "ok",    Message = msg,  Timestamp = NowTS() };
 
-    // ── banco ─────────────────────────────────────────────────────────────────
+    // banco 
 
     static void InitDB()
     {
@@ -59,7 +59,7 @@ class Server
         ", db).ExecuteNonQuery();
     }
 
-    // ── handlers ─────────────────────────────────────────────────────────────
+    //  handlers
 
     static OutMsg HandleLogin(InMsg msg)
     {
@@ -113,7 +113,7 @@ class Server
         return new OutMsg { Status = "ok", Message = "OK", Data = list, Timestamp = NowTS() };
     }
 
-    // ── main ─────────────────────────────────────────────────────────────────
+    //  main
 
     static void Main(string[] args)
     {

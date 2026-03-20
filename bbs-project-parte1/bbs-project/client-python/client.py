@@ -10,7 +10,7 @@ SERVER_PORT = os.getenv("SERVER_PORT", "5550")
 CHANNELS = ["geral", "random", "noticias", "projetos", "python-talk"]
 
 
-# ── comunicação ─────────────────────────────────────────────────────────────
+# comunicação
 
 def send_recv(socket, payload):
     raw = msgpack.packb(payload, use_bin_type=True)
@@ -22,7 +22,7 @@ def send_recv(socket, payload):
     return resp
 
 
-# ── ações do bot ─────────────────────────────────────────────────────────────
+# ações do bot
 
 def login(socket):
     while True:
@@ -51,8 +51,7 @@ def list_channels(socket):
     return resp
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
-
+# main 
 def main():
     time.sleep(3)   # aguarda servidor subir
 

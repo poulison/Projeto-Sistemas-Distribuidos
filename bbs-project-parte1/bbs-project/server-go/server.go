@@ -12,7 +12,7 @@ import (
 	msgpack "github.com/vmihailenco/msgpack/v5"
 )
 
-// ── structs ──────────────────────────────────────────────────────────────────
+// structs 
 
 type InMsg struct {
 	Type        string  `msgpack:"type"`
@@ -28,7 +28,7 @@ type OutMsg struct {
 	Timestamp float64  `msgpack:"timestamp"`
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// helpers 
 
 func nowTS() float64 {
 	return float64(time.Now().UnixNano()) / 1e9
@@ -42,7 +42,7 @@ func okResp(msg string) OutMsg {
 	return OutMsg{Status: "ok", Message: msg, Timestamp: nowTS()}
 }
 
-// ── banco de dados ────────────────────────────────────────────────────────────
+//banco de dados
 
 var db *sql.DB
 
@@ -74,7 +74,7 @@ func initDB() {
 	}
 }
 
-// ── handlers ─────────────────────────────────────────────────────────────────
+// handlers 
 
 func handleLogin(msg InMsg) OutMsg {
 	if msg.Username == "" {
@@ -119,7 +119,7 @@ func handleListChannels() OutMsg {
 	return OutMsg{Status: "ok", Message: "OK", Data: channels, Timestamp: nowTS()}
 }
 
-// ── main ─────────────────────────────────────────────────────────────────────
+// main 
 
 func main() {
 	port := os.Getenv("PORT")

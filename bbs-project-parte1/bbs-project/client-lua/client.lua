@@ -8,7 +8,7 @@ local SERVER_PORT = os.getenv("SERVER_PORT") or "5554"
 
 local channels = { "geral", "random", "noticias", "projetos", "lua-talk" }
 
--- ── helpers ───────────────────────────────────────────────────────────────────
+-- helpers 
 
 local function now_ts()
     return os.time() + 0.0
@@ -18,7 +18,7 @@ local function sleep(s)
     os.execute("sleep " .. s)
 end
 
--- ── comunicação ───────────────────────────────────────────────────────────────
+--  comunicação 
 
 local socket
 
@@ -75,7 +75,7 @@ local function list_channels()
     end
 end
 
--- ── main ─────────────────────────────────────────────────────────────────────
+-- main 
 
 sleep(3)
 

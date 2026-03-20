@@ -15,7 +15,7 @@ static const char *channels[] = {
     "geral", "random", "noticias", "projetos", "c-talk", NULL
 };
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+//  helpers
 
 static double now_ts(void) {
     struct timespec ts;
@@ -23,9 +23,9 @@ static double now_ts(void) {
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
-// ── send/recv ─────────────────────────────────────────────────────────────────
+// send/recv 
 
-// Returns newly allocated msgpack buffer. Caller must free().
+
 static char *build_msg(const char *type, const char *username,
                         const char *channel_name, size_t *out_size)
 {
@@ -89,7 +89,7 @@ static void send_recv(const char *type, const char *channel_name) {
 
     printf("[%s] RECV | status=%-8s | msg=%s\n", bot_name, status, message);
 
-    // if list response, print channels
+    
     if (strcmp(type, "list") == 0) {
         mpack_node_t dn = mpack_node_map_cstr(root, "data");
         if (mpack_node_type(dn) == mpack_type_array) {
@@ -109,7 +109,7 @@ static void send_recv(const char *type, const char *channel_name) {
     mpack_tree_destroy(&tree);
 }
 
-// ── main ─────────────────────────────────────────────────────────────────────
+// main 
 
 int main(void) {
     bot_name = getenv("BOT_NAME");    if (!bot_name)    bot_name    = "bot-c-1";
@@ -130,7 +130,7 @@ int main(void) {
     // login
     while (1) {
         send_recv("login", NULL);
-        // assume ok for simplicity (mpack parse already printed status)
+        
         break;
     }
     sleep(1);
