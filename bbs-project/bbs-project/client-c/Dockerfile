@@ -11,6 +11,6 @@ RUN wget -q https://github.com/ludocode/mpack/releases/download/v1.1.1/mpack-ama
     && rm -rf mpack-amalgamation-1.1.1*
 
 COPY client.c .
-RUN gcc -O2 -o client client.c mpack.c -lzmq -lm
+RUN gcc -O2 -o client client.c mpack.c -lzmq -lm -lpthread
 
 CMD ["./client"]

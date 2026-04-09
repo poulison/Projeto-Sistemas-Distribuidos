@@ -1,15 +1,27 @@
-version: "3.9"
-
 services:
 
-  #  PYTHON 
+  # ==================== PROXY PUB/SUB ====================
+  proxy:
+    build: ./proxy
+    container_name: proxy
+    environment:
+      - XSUB_PORT=5557
+      - XPUB_PORT=5558
+    networks:
+      - bbs-net
+
+  # ==================== PYTHON ====================
   server-python:
     build: ./server-python
     container_name: server-python
     environment:
       - PORT=5550
+      - PROXY_HOST=proxy
+      - XSUB_PORT=5557
     volumes:
       - data-python:/data
+    depends_on:
+      - proxy
     networks:
       - bbs-net
 
@@ -20,6 +32,8 @@ services:
       - BOT_NAME=bot-py-1
       - SERVER_HOST=server-python
       - SERVER_PORT=5550
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-python
     networks:
@@ -32,19 +46,25 @@ services:
       - BOT_NAME=bot-py-2
       - SERVER_HOST=server-python
       - SERVER_PORT=5550
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-python
     networks:
       - bbs-net
 
-  #  GO 
+  # ==================== GO ====================
   server-go:
     build: ./server-go
     container_name: server-go
     environment:
       - PORT=5551
+      - PROXY_HOST=proxy
+      - XSUB_PORT=5557
     volumes:
       - data-go:/data
+    depends_on:
+      - proxy
     networks:
       - bbs-net
 
@@ -55,6 +75,8 @@ services:
       - BOT_NAME=bot-go-1
       - SERVER_HOST=server-go
       - SERVER_PORT=5551
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-go
     networks:
@@ -67,19 +89,25 @@ services:
       - BOT_NAME=bot-go-2
       - SERVER_HOST=server-go
       - SERVER_PORT=5551
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-go
     networks:
       - bbs-net
 
-  #  C# 
+  # ==================== C# ====================
   server-csharp:
     build: ./server-csharp
     container_name: server-csharp
     environment:
       - PORT=5552
+      - PROXY_HOST=proxy
+      - XSUB_PORT=5557
     volumes:
       - data-csharp:/data
+    depends_on:
+      - proxy
     networks:
       - bbs-net
 
@@ -90,6 +118,8 @@ services:
       - BOT_NAME=bot-cs-1
       - SERVER_HOST=server-csharp
       - SERVER_PORT=5552
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-csharp
     networks:
@@ -102,19 +132,25 @@ services:
       - BOT_NAME=bot-cs-2
       - SERVER_HOST=server-csharp
       - SERVER_PORT=5552
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-csharp
     networks:
       - bbs-net
 
-  #  C 
+  # ==================== C ====================
   server-c:
     build: ./server-c
     container_name: server-c
     environment:
       - PORT=5553
+      - PROXY_HOST=proxy
+      - XSUB_PORT=5557
     volumes:
       - data-c:/data
+    depends_on:
+      - proxy
     networks:
       - bbs-net
 
@@ -125,6 +161,8 @@ services:
       - BOT_NAME=bot-c-1
       - SERVER_HOST=server-c
       - SERVER_PORT=5553
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-c
     networks:
@@ -137,19 +175,25 @@ services:
       - BOT_NAME=bot-c-2
       - SERVER_HOST=server-c
       - SERVER_PORT=5553
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-c
     networks:
       - bbs-net
 
-  #  LUA 
+  # ==================== LUA ====================
   server-lua:
     build: ./server-lua
     container_name: server-lua
     environment:
       - PORT=5554
+      - PROXY_HOST=proxy
+      - XSUB_PORT=5557
     volumes:
       - data-lua:/data
+    depends_on:
+      - proxy
     networks:
       - bbs-net
 
@@ -160,6 +204,8 @@ services:
       - BOT_NAME=bot-lua-1
       - SERVER_HOST=server-lua
       - SERVER_PORT=5554
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-lua
     networks:
@@ -172,6 +218,8 @@ services:
       - BOT_NAME=bot-lua-2
       - SERVER_HOST=server-lua
       - SERVER_PORT=5554
+      - PROXY_HOST=proxy
+      - XPUB_PORT=5558
     depends_on:
       - server-lua
     networks:
