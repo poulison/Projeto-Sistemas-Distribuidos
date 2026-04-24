@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine
+FROM golang:1.23-alpine
 WORKDIR /app
 COPY client.go .
 RUN go mod init bbs/client && \

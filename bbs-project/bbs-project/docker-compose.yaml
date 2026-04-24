@@ -1,5 +1,15 @@
 services:
 
+  # ==================== REFERÊNCIA ====================
+  reference:
+    build: ./reference
+    container_name: reference
+    environment:
+      - REF_PORT=5559
+      - HEARTBEAT_TIMEOUT=30
+    networks:
+      - bbs-net
+
   # ==================== PROXY PUB/SUB ====================
   proxy:
     build: ./proxy
@@ -18,10 +28,14 @@ services:
       - PORT=5550
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - REF_HOST=reference
+      - REF_PORT=5559
+      - SERVER_NAME=server-python
     volumes:
       - data-python:/data
     depends_on:
       - proxy
+      - reference
     networks:
       - bbs-net
 
@@ -61,10 +75,14 @@ services:
       - PORT=5551
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - REF_HOST=reference
+      - REF_PORT=5559
+      - SERVER_NAME=server-go
     volumes:
       - data-go:/data
     depends_on:
       - proxy
+      - reference
     networks:
       - bbs-net
 
@@ -104,10 +122,14 @@ services:
       - PORT=5552
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - REF_HOST=reference
+      - REF_PORT=5559
+      - SERVER_NAME=server-csharp
     volumes:
       - data-csharp:/data
     depends_on:
       - proxy
+      - reference
     networks:
       - bbs-net
 
@@ -147,10 +169,14 @@ services:
       - PORT=5553
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - REF_HOST=reference
+      - REF_PORT=5559
+      - SERVER_NAME=server-c
     volumes:
       - data-c:/data
     depends_on:
       - proxy
+      - reference
     networks:
       - bbs-net
 
@@ -190,10 +216,14 @@ services:
       - PORT=5554
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - REF_HOST=reference
+      - REF_PORT=5559
+      - SERVER_NAME=server-lua
     volumes:
       - data-lua:/data
     depends_on:
       - proxy
+      - reference
     networks:
       - bbs-net
 

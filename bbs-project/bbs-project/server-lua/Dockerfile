@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
 RUN luarocks install lzmq
 RUN luarocks install lua-messagepack
 RUN luarocks install lsqlite3
+RUN luarocks install luasocket
 
 WORKDIR /app
 COPY server.lua .

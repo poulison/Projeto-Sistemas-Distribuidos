@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sync"
 	"time"
 
 	zmq4 "github.com/go-zeromq/zmq4"
@@ -17,21 +18,23 @@ type ReqMsg struct {
 	ChannelName string  `msgpack:"channel_name,omitempty"`
 	Message     string  `msgpack:"message,omitempty"`
 	Timestamp   float64 `msgpack:"timestamp"`
+	Clock       int64   `msgpack:"clock"`
 }
-
 type RespMsg struct {
 	Status    string   `msgpack:"status"`
 	Message   string   `msgpack:"message"`
 	Data      []string `msgpack:"data"`
 	Timestamp float64  `msgpack:"timestamp"`
+	Clock     int64    `msgpack:"clock"`
+	Rank      int      `msgpack:"rank"`
 }
-
 type PubPayload struct {
 	Channel   string  `msgpack:"channel"`
 	Username  string  `msgpack:"username"`
 	Message   string  `msgpack:"message"`
 	Timestamp float64 `msgpack:"timestamp"`
 	Received  float64 `msgpack:"received"`
+	Clock     int64   `msgpack:"clock"`
 }
 
 var (
@@ -41,36 +44,45 @@ var (
 	proxyHost  = getEnv("PROXY_HOST",  "proxy")
 	xpubPort   = getEnv("XPUB_PORT",   "5558")
 	reqSock    zmq4.Socket
+
+	logicClock int64
+	clockMu    sync.Mutex
 )
 
-var words = []string{"ola", "mundo", "sistema", "distribuido", "mensagem", "canal",
-	"teste", "golang", "zmq", "pubsub", "broker", "topico", "servidor", "rede"}
+var words = []string{"ola","mundo","sistema","distribuido","mensagem","canal",
+	"teste","golang","zmq","pubsub","broker","topico","servidor","rede"}
 
-func getEnv(key, def string) string {
-	if v := os.Getenv(key); v != "" { return v }
-	return def
+func getEnv(k, d string) string { if v := os.Getenv(k); v != "" { return v }; return d }
+
+func tickSend() int64 {
+	clockMu.Lock(); defer clockMu.Unlock()
+	logicClock++; return logicClock
+}
+func tickRecv(r int64) {
+	clockMu.Lock(); defer clockMu.Unlock()
+	if r > logicClock { logicClock = r }
 }
 
 func nowTS() float64 { return float64(time.Now().UnixNano()) / 1e9 }
 
 func randomMsg() string {
-	n := 3 + rand.Intn(5)
-	msg := ""
-	for i := 0; i < n; i++ {
-		if i > 0 { msg += " " }
-		msg += words[rand.Intn(len(words))]
-	}
-	return msg
+	n := 3 + rand.Intn(5); parts := make([]string, n)
+	for i := range parts { parts[i] = words[rand.Intn(len(words))] }
+	result := ""
+	for i, p := range parts { if i > 0 { result += " " }; result += p }
+	return result
 }
 
 func sendRecv(payload ReqMsg) RespMsg {
+	payload.Clock = tickSend()
 	raw, _ := msgpack.Marshal(payload)
-	fmt.Printf("[%s] SEND | type=%-10s | ts=%.3f\n", botName, payload.Type, payload.Timestamp)
+	fmt.Printf("[%s] SEND | type=%-10s | clock=%d | ts=%.3f\n", botName, payload.Type, payload.Clock, payload.Timestamp)
 	reqSock.Send(zmq4.NewMsg(raw))
 	zmqMsg, _ := reqSock.Recv()
 	var resp RespMsg
 	msgpack.Unmarshal(zmqMsg.Frames[0], &resp)
-	fmt.Printf("[%s] RECV | status=%-8s | msg=%s\n", botName, resp.Status, resp.Message)
+	tickRecv(resp.Clock)
+	fmt.Printf("[%s] RECV | status=%-8s | clock=%d | msg=%s\n", botName, resp.Status, resp.Clock, resp.Message)
 	return resp
 }
 
@@ -89,14 +101,15 @@ func subscriberThread(channels []string) {
 		if err != nil || len(zmqMsg.Frames) < 2 { continue }
 		var p PubPayload
 		msgpack.Unmarshal(zmqMsg.Frames[1], &p)
-		fmt.Printf("[%s] MSG  | channel=%-12s | from=%-15s | sent=%.3f | recv=%.3f | %s\n",
-			botName, p.Channel, p.Username, p.Timestamp, nowTS(), p.Message)
+		tickRecv(p.Clock)
+		fmt.Printf("[%s] MSG  | channel=%-12s | from=%-12s | clock=%d | sent=%.3f | recv=%.3f | %s\n",
+			botName, p.Channel, p.Username, p.Clock, p.Timestamp, nowTS(), p.Message)
 	}
 }
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
-	time.Sleep(3 * time.Second)
+	time.Sleep(4 * time.Second)
 
 	ctx := context.Background()
 	reqSock = zmq4.NewReq(ctx)
@@ -104,35 +117,30 @@ func main() {
 	reqSock.Dial(fmt.Sprintf("tcp://%s:%s", serverHost, serverPort))
 	fmt.Printf("[%s] Connected to %s:%s\n", botName, serverHost, serverPort)
 
-	// login
 	for {
 		resp := sendRecv(ReqMsg{Type: "login", Username: botName, Timestamp: nowTS()})
-		if resp.Status == "ok" { fmt.Printf("[%s] ✔ Login successful!\n", botName); break }
+		if resp.Status == "ok" {
+			fmt.Printf("[%s] ✔ Login | server rank=%d\n", botName, resp.Rank)
+			break
+		}
 		time.Sleep(2 * time.Second)
 	}
 
-	// lista canais
 	resp := sendRecv(ReqMsg{Type: "list", Username: botName, Timestamp: nowTS()})
 	channels := resp.Data
-	fmt.Printf("[%s] Channels available: %v\n", botName, channels)
-
-	// cria canal se menos de 5
 	if len(channels) < 5 {
-		newCh := fmt.Sprintf("ch-%s-%d", botName[:5], rand.Intn(900)+100)
+		newCh := fmt.Sprintf("ch-go-%d", rand.Intn(900)+100)
 		sendRecv(ReqMsg{Type: "channel", Username: botName, ChannelName: newCh, Timestamp: nowTS()})
 		resp = sendRecv(ReqMsg{Type: "list", Username: botName, Timestamp: nowTS()})
 		channels = resp.Data
 	}
 
-	// inscreve em até 3 canais
 	rand.Shuffle(len(channels), func(i, j int) { channels[i], channels[j] = channels[j], channels[i] })
-	subChannels := channels
-	if len(subChannels) > 3 { subChannels = channels[:3] }
+	subChs := channels; if len(subChs) > 3 { subChs = channels[:3] }
 
-	go subscriberThread(subChannels)
+	go subscriberThread(subChs)
 	time.Sleep(1500 * time.Millisecond)
 
-	// loop infinito
 	fmt.Printf("[%s] Starting publish loop\n", botName)
 	for {
 		ch := channels[rand.Intn(len(channels))]
