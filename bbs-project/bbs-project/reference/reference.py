@@ -5,14 +5,11 @@ import threading
 import os
 
 PORT    = int(os.getenv("REF_PORT", "5559"))
-TIMEOUT = float(os.getenv("HEARTBEAT_TIMEOUT", "30"))  # remove servidor após 30s sem heartbeat
+TIMEOUT = float(os.getenv("HEARTBEAT_TIMEOUT", "30"))
 
-# ── estado ────────────────────────────────────────────────────────────────────
-servers      = {}   # name -> {"rank": int, "last_beat": float}
+servers      = {}
 rank_counter = 0
 lock         = threading.Lock()
-
-# ── relógio lógico ────────────────────────────────────────────────────────────
 logical_clock = 0
 
 def tick_send():
@@ -20,11 +17,10 @@ def tick_send():
     logical_clock += 1
     return logical_clock
 
-def tick_recv(received):
+def tick_recv(r):
     global logical_clock
-    logical_clock = max(logical_clock, received)
+    logical_clock = max(logical_clock, r)
 
-# ── heartbeat watchdog ────────────────────────────────────────────────────────
 def watchdog():
     while True:
         time.sleep(10)
@@ -35,13 +31,11 @@ def watchdog():
                 print(f"[REFERENCE] REMOVE server '{name}' (no heartbeat)", flush=True)
                 del servers[name]
 
-# ── handlers ──────────────────────────────────────────────────────────────────
 def handle_register(data):
     global rank_counter
     name = str(data.get("name", "")).strip()
     if not name:
-        return {"status": "error", "message": "Name required",
-                "clock": tick_send(), "timestamp": time.time()}
+        return {"status": "error", "message": "Name required", "clock": tick_send(), "timestamp": time.time()}
     with lock:
         if name not in servers:
             rank_counter += 1
@@ -63,13 +57,11 @@ def handle_heartbeat(data):
             print(f"[REFERENCE] HEARTBEAT from '{name}' | clock={data.get('clock',0)}", flush=True)
         else:
             print(f"[REFERENCE] HEARTBEAT from unknown '{name}' — ignoring", flush=True)
-    # retorna tempo atual para sincronização do relógio físico
-    return {"status": "ok", "time": time.time(), "clock": tick_send(), "timestamp": time.time()}
+    # ← SEM campo "time" na resposta (parte 4)
+    return {"status": "ok", "message": "OK", "clock": tick_send(), "timestamp": time.time()}
 
-# ── main ──────────────────────────────────────────────────────────────────────
 def main():
     threading.Thread(target=watchdog, daemon=True).start()
-
     ctx    = zmq.Context()
     socket = ctx.socket(zmq.REP)
     socket.bind(f"tcp://*:{PORT}")
@@ -79,7 +71,6 @@ def main():
         raw  = socket.recv()
         data = msgpack.unpackb(raw, raw=False)
         tick_recv(data.get("clock", 0))
-
         msg_type = data.get("type", "")
         print(f"[REFERENCE] RECV | type={msg_type:<12} | from={data.get('name','?'):<15} | clock={data.get('clock',0)}", flush=True)
 

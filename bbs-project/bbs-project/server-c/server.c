@@ -11,275 +11,432 @@
 
 #define DB_PATH  "/data/server.db"
 #define MAX_BUF  65536
+#define SNAME_MAX 64
 
-static sqlite3 *db;
-static void    *pub_socket;
-static void    *zmq_ctx;
+static sqlite3   *db;
+static void      *pub_socket;
+static char       server_name[SNAME_MAX];
+static char       ref_host[64], ref_port[16];
+static char       proxy_host[64], xsub_port[16], xpub_port[16];
+static char       s2s_port_str[16];
+static int        server_rank = 0;
+static long long  logical_clock = 0;
+static double     time_offset   = 0.0;
+static char       coordinator[SNAME_MAX] = "";
+static pthread_mutex_t clock_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t offset_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t coord_mu  = PTHREAD_MUTEX_INITIALIZER;
 
-/* relógio lógico */
-static long long logical_clock = 0;
-static pthread_mutex_t clock_mu = PTHREAD_MUTEX_INITIALIZER;
+// structs para servidor conhecido
+typedef struct { char name[SNAME_MAX]; int rank; } ServerInfo;
+static ServerInfo known_servers[32];
+static int        known_count = 0;
+static pthread_mutex_t servers_mu = PTHREAD_MUTEX_INITIALIZER;
 
+static double now_ts(void) {
+    struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+    double t = (double)ts.tv_sec + (double)ts.tv_nsec/1e9;
+    pthread_mutex_lock(&offset_mu); t += time_offset; pthread_mutex_unlock(&offset_mu);
+    return t;
+}
 static long long tick_send(void) {
-    pthread_mutex_lock(&clock_mu);
-    long long v = ++logical_clock;
-    pthread_mutex_unlock(&clock_mu);
-    return v;
+    pthread_mutex_lock(&clock_mu); logical_clock++;
+    long long lc=logical_clock; pthread_mutex_unlock(&clock_mu); return lc;
 }
 static void tick_recv(long long r) {
     pthread_mutex_lock(&clock_mu);
-    if (r > logical_clock) logical_clock = r;
+    if(r>logical_clock) logical_clock=r;
     pthread_mutex_unlock(&clock_mu);
 }
 
-/* relógio físico */
-static double time_offset = 0.0;
-static int server_rank = 0;
-static char server_name[64] = "server-c";
-static char ref_host[64]    = "reference";
-static char ref_port[16]    = "5559";
-
-static double now_ts(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec/1e9 + time_offset;
-}
-
 static void get_str(mpack_node_t root, const char *key, char *buf, size_t size) {
-    buf[0] = '\0';
-    mpack_node_t node = mpack_node_map_cstr(root, key);
-    if (mpack_node_type(node) == mpack_type_str)
-        mpack_node_copy_utf8_cstr(node, buf, size);
+    buf[0]='\0';
+    mpack_node_t n=mpack_node_map_cstr(root,key);
+    if(mpack_node_type(n)==mpack_type_str) mpack_node_copy_utf8_cstr(n,buf,size);
 }
 static double get_double(mpack_node_t root, const char *key) {
-    mpack_node_t n = mpack_node_map_cstr(root, key);
-    if (mpack_node_type(n) != mpack_type_missing) return mpack_node_double(n);
-    return now_ts();
+    mpack_node_t n=mpack_node_map_cstr(root,key);
+    if(mpack_node_type(n)!=mpack_type_missing) return mpack_node_double(n);
+    return 0.0;
 }
-static long long get_int(mpack_node_t root, const char *key) {
-    mpack_node_t n = mpack_node_map_cstr(root, key);
-    if (mpack_node_type(n) != mpack_type_missing) return (long long)mpack_node_i64(n);
+static long long get_ll(mpack_node_t root, const char *key) {
+    mpack_node_t n=mpack_node_map_cstr(root,key);
+    if(mpack_node_type(n)!=mpack_type_missing) return (long long)mpack_node_i64(n);
     return 0;
 }
 
 static void init_db(void) {
-    mkdir("/data", 0755);
-    if (sqlite3_open(DB_PATH, &db) != SQLITE_OK) { fprintf(stderr,"Cannot open DB\n"); exit(1); }
+    mkdir("/data",0755);
+    sqlite3_open(DB_PATH,&db);
     sqlite3_exec(db,
         "CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, created_at REAL NOT NULL);"
         "CREATE TABLE IF NOT EXISTS logins (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, timestamp REAL NOT NULL);"
         "CREATE TABLE IF NOT EXISTS channels (name TEXT PRIMARY KEY, created_by TEXT NOT NULL, created_at REAL NOT NULL);"
         "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, username TEXT NOT NULL, message TEXT NOT NULL, timestamp REAL NOT NULL, clock INTEGER NOT NULL DEFAULT 0);",
-        NULL, NULL, NULL);
+        NULL,NULL,NULL);
 }
 
-/* chama o serviço de referência */
-static void call_reference(const char *type_str, long long msg_count) {
-    void *sock = zmq_socket(zmq_ctx, ZMQ_REQ);
-    int timeout = 5000;
-    zmq_setsockopt(sock, ZMQ_RCVTIMEO, &timeout, sizeof(timeout));
-    char addr[128]; snprintf(addr, sizeof(addr), "tcp://%s:%s", ref_host, ref_port);
-    zmq_connect(sock, addr);
+// ── helper: envia REQ e recebe REP num socket temporário ─────────────────────
+static int zmq_req_rep(void *ctx, const char *addr, const char *send_buf, size_t send_size,
+                       char *recv_buf, int *recv_size, int timeout_ms) {
+    void *sock=zmq_socket(ctx,ZMQ_REQ);
+    zmq_setsockopt(sock,ZMQ_RCVTIMEO,&timeout_ms,sizeof(timeout_ms));
+    int linger=0; zmq_setsockopt(sock,ZMQ_LINGER,&linger,sizeof(linger));
+    zmq_connect(sock,addr);
+    int r=zmq_send(sock,send_buf,send_size,0);
+    if(r<0){zmq_close(sock);return -1;}
+    *recv_size=zmq_recv(sock,recv_buf,MAX_BUF-1,0);
+    zmq_close(sock);
+    return *recv_size>0?0:-1;
+}
 
-    char *buf = NULL; size_t sz = 0;
-    mpack_writer_t w;
-    mpack_writer_init_growable(&w, &buf, &sz);
-    int fields = (msg_count >= 0) ? 5 : 4;
-    mpack_start_map(&w, fields);
-    mpack_write_cstr(&w, "type");      mpack_write_cstr(&w, type_str);
-    mpack_write_cstr(&w, "name");      mpack_write_cstr(&w, server_name);
-    mpack_write_cstr(&w, "clock");     mpack_write_i64(&w, tick_send());
-    mpack_write_cstr(&w, "timestamp"); mpack_write_double(&w, now_ts());
-    if (msg_count >= 0) { mpack_write_cstr(&w, "msg_count"); mpack_write_i64(&w, msg_count); }
+static char *build_req(const char *type, long long clk, size_t *out_size) {
+    char *buf=NULL; mpack_writer_t w;
+    mpack_writer_init_growable(&w,&buf,out_size);
+    mpack_start_map(&w,4);
+    mpack_write_cstr(&w,"type");      mpack_write_cstr(&w,type);
+    mpack_write_cstr(&w,"name");      mpack_write_cstr(&w,server_name);
+    mpack_write_cstr(&w,"clock");     mpack_write_i64(&w,clk);
+    mpack_write_cstr(&w,"timestamp"); mpack_write_double(&w,now_ts());
+    mpack_finish_map(&w); mpack_writer_destroy(&w); return buf;
+}
+
+static void *ctx_global=NULL;
+
+static int call_ref(const char *type, char *recv_buf, int *recv_size) {
+    size_t sz=0; char *msg=build_req(type,tick_send(),&sz);
+    char addr[128]; snprintf(addr,sizeof(addr),"tcp://%s:%s",ref_host,ref_port);
+    int r=zmq_req_rep(ctx_global,addr,msg,sz,recv_buf,recv_size,5000);
+    free(msg); return r;
+}
+
+static int s2s_port_of(const char *name) {
+    if(strcmp(name,"server-python")==0) return 5560;
+    if(strcmp(name,"server-go")==0)     return 5561;
+    if(strcmp(name,"server-csharp")==0) return 5562;
+    if(strcmp(name,"server-c")==0)      return 5563;
+    if(strcmp(name,"server-lua")==0)    return 5564;
+    return 5560;
+}
+
+static int call_s2s(const char *srv_name, const char *type, char *recv_buf, int *recv_size) {
+    size_t sz=0;
+    char *buf=NULL; mpack_writer_t w; mpack_writer_init_growable(&w,&buf,&sz);
+    mpack_start_map(&w,4);
+    mpack_write_cstr(&w,"type");      mpack_write_cstr(&w,type);
+    mpack_write_cstr(&w,"name");      mpack_write_cstr(&w,server_name);
+    mpack_write_cstr(&w,"rank");      mpack_write_i64(&w,server_rank);
+    mpack_write_cstr(&w,"clock");     mpack_write_i64(&w,tick_send());
     mpack_finish_map(&w); mpack_writer_destroy(&w);
+    char addr[128]; snprintf(addr,sizeof(addr),"tcp://%s:%d",srv_name,s2s_port_of(srv_name));
+    int r=zmq_req_rep(ctx_global,addr,buf,sz,recv_buf,recv_size,3000);
+    free(buf); return r;
+}
 
-    zmq_send(sock, buf, sz, 0);
-    free(buf);
+static void connect_to_reference(void) {
+    char rbuf[MAX_BUF]; int rsz=0;
+    if(call_ref("register",rbuf,&rsz)<0){printf("[%s] Reference error\n",server_name);fflush(stdout);return;}
+    mpack_tree_t t; mpack_tree_init_data(&t,rbuf,rsz); mpack_tree_parse(&t);
+    mpack_node_t root=mpack_tree_root(&t);
+    tick_recv(get_ll(root,"clock"));
+    mpack_node_t rn=mpack_node_map_cstr(root,"rank");
+    if(mpack_node_type(rn)!=mpack_type_missing) server_rank=(int)mpack_node_i64(rn);
+    mpack_tree_destroy(&t);
+    printf("[%s] Registered | rank=%d\n",server_name,server_rank); fflush(stdout);
+}
 
-    static char resp_buf[MAX_BUF];
-    int n = zmq_recv(sock, resp_buf, MAX_BUF-1, 0);
-    if (n > 0) {
-        mpack_tree_t tree;
-        mpack_tree_init_data(&tree, resp_buf, n);
-        mpack_tree_parse(&tree);
-        mpack_node_t root = mpack_tree_root(&tree);
-        long long rclk = get_int(root, "clock");
-        tick_recv(rclk);
-        int rank_val = (int)get_int(root, "rank");
-        if (rank_val > 0) server_rank = rank_val;
-        double ref_time = get_double(root, "time");
-        if (ref_time > 1e9) {
-            struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
-            time_offset = ref_time - ((double)ts.tv_sec + (double)ts.tv_nsec/1e9);
+static void get_server_list(void) {
+    char rbuf[MAX_BUF]; int rsz=0;
+    if(call_ref("list",rbuf,&rsz)<0) return;
+    mpack_tree_t t; mpack_tree_init_data(&t,rbuf,rsz); mpack_tree_parse(&t);
+    mpack_node_t root=mpack_tree_root(&t);
+    tick_recv(get_ll(root,"clock"));
+    mpack_node_t sn=mpack_node_map_cstr(root,"servers");
+    pthread_mutex_lock(&servers_mu); known_count=0;
+    if(mpack_node_type(sn)==mpack_type_array) {
+        size_t len=mpack_node_array_length(sn);
+        for(size_t i=0;i<len&&known_count<32;i++){
+            mpack_node_t item=mpack_node_array_at(sn,i);
+            mpack_node_t nn=mpack_node_map_cstr(item,"name");
+            mpack_node_t rn2=mpack_node_map_cstr(item,"rank");
+            if(mpack_node_type(nn)==mpack_type_str){
+                mpack_node_copy_utf8_cstr(nn,known_servers[known_count].name,SNAME_MAX);
+                known_servers[known_count].rank=(int)mpack_node_i64(rn2);
+                known_count++;
+            }
         }
-        double ref_ts = get_double(root, "timestamp");
-        if (ref_ts > 1e9 && strcmp(type_str,"register")==0) {
-            struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
-            time_offset = ref_ts - ((double)ts.tv_sec + (double)ts.tv_nsec/1e9);
-            printf("[%s] Registered | rank=%d | offset=%.3fs\n", server_name, server_rank, time_offset);
+    }
+    pthread_mutex_unlock(&servers_mu);
+    mpack_tree_destroy(&t);
+}
+
+static void send_heartbeat(void) {
+    char rbuf[MAX_BUF]; int rsz=0;
+    call_ref("heartbeat",rbuf,&rsz);
+    printf("[%s] HEARTBEAT sent | rank=%d | clock=%lld\n",server_name,server_rank,logical_clock); fflush(stdout);
+}
+
+static void sync_with_coordinator(void) {
+    char coord[SNAME_MAX];
+    pthread_mutex_lock(&coord_mu); strncpy(coord,coordinator,SNAME_MAX); pthread_mutex_unlock(&coord_mu);
+    if(coord[0]=='\0'||strcmp(coord,server_name)==0) return;
+    char rbuf[MAX_BUF]; int rsz=0;
+    if(call_s2s(coord,"get_time",rbuf,&rsz)<0){
+        printf("[%s] Coordinator '%s' unreachable, election\n",server_name,coord); fflush(stdout);
+        // chama eleição em background
+        pthread_t tid; pthread_detach(tid);
+        return;
+    }
+    mpack_tree_t t; mpack_tree_init_data(&t,rbuf,rsz); mpack_tree_parse(&t);
+    mpack_node_t root=mpack_tree_root(&t);
+    tick_recv(get_ll(root,"clock"));
+    double ref_time=get_double(root,"time");
+    if(ref_time>0){
+        struct timespec ts; clock_gettime(CLOCK_REALTIME,&ts);
+        double real_now=(double)ts.tv_sec+(double)ts.tv_nsec/1e9;
+        pthread_mutex_lock(&offset_mu); time_offset=ref_time-real_now; pthread_mutex_unlock(&offset_mu);
+        printf("[%s] CLOCK SYNC | coord=%s | ref_time=%.3f | offset=%.6f\n",server_name,coord,ref_time,time_offset); fflush(stdout);
+    }
+    mpack_tree_destroy(&t);
+}
+
+static void announce_coordinator(void) {
+    long long clk=tick_send();
+    char *buf=NULL; size_t sz=0; mpack_writer_t w;
+    mpack_writer_init_growable(&w,&buf,&sz);
+    mpack_start_map(&w,3);
+    mpack_write_cstr(&w,"coordinator"); mpack_write_cstr(&w,server_name);
+    mpack_write_cstr(&w,"clock");       mpack_write_i64(&w,clk);
+    mpack_write_cstr(&w,"timestamp");   mpack_write_double(&w,now_ts());
+    mpack_finish_map(&w); mpack_writer_destroy(&w);
+    zmq_send(pub_socket,"servers",7,ZMQ_SNDMORE);
+    zmq_send(pub_socket,buf,sz,0); free(buf);
+    printf("[%s] ELECTED as coordinator | clock=%lld\n",server_name,clk); fflush(stdout);
+}
+
+static void start_election(void) {
+    printf("[%s] Starting election | rank=%d\n",server_name,server_rank); fflush(stdout);
+    get_server_list();
+
+    typedef struct{char name[SNAME_MAX];int rank;} Cand;
+    Cand candidates[33]; int nc=0;
+    strncpy(candidates[nc].name,server_name,SNAME_MAX); candidates[nc].rank=server_rank; nc++;
+
+    pthread_mutex_lock(&servers_mu);
+    for(int i=0;i<known_count;i++){
+        if(strcmp(known_servers[i].name,server_name)==0) continue;
+        char rbuf[MAX_BUF]; int rsz=0;
+        if(call_s2s(known_servers[i].name,"election",rbuf,&rsz)==0){
+            mpack_tree_t t; mpack_tree_init_data(&t,rbuf,rsz); mpack_tree_parse(&t);
+            mpack_node_t root=mpack_tree_root(&t);
+            int rk=(int)get_ll(root,"rank");
+            mpack_tree_destroy(&t);
+            strncpy(candidates[nc].name,known_servers[i].name,SNAME_MAX);
+            candidates[nc].rank=rk; nc++;
         }
-        if (strcmp(type_str,"heartbeat")==0)
-            printf("[%s] HEARTBEAT sent | rank=%d | clock=%lld | offset=%.3fs\n", server_name, server_rank, logical_clock, time_offset);
+    }
+    pthread_mutex_unlock(&servers_mu);
+
+    // menor rank ganha
+    int winner_idx=0;
+    for(int i=1;i<nc;i++) if(candidates[i].rank<candidates[winner_idx].rank) winner_idx=i;
+
+    pthread_mutex_lock(&coord_mu); strncpy(coordinator,candidates[winner_idx].name,SNAME_MAX); pthread_mutex_unlock(&coord_mu);
+    if(strcmp(candidates[winner_idx].name,server_name)==0) announce_coordinator();
+    printf("[%s] Election result: coordinator='%s'\n",server_name,coordinator); fflush(stdout);
+}
+
+// ── thread S2S REP ────────────────────────────────────────────────────────────
+static void *s2s_server_thread(void *arg) {
+    void *ctx=zmq_ctx_new(); void *sock=zmq_socket(ctx,ZMQ_REP);
+    char addr[64]; snprintf(addr,sizeof(addr),"tcp://*:%s",s2s_port_str);
+    zmq_bind(sock,addr);
+    printf("[%s] S2S listening on port %s\n",server_name,s2s_port_str); fflush(stdout);
+    static char rbuf[MAX_BUF];
+    while(1){
+        int nb=zmq_recv(sock,rbuf,MAX_BUF-1,0); if(nb<0) continue;
+        mpack_tree_t t; mpack_tree_init_data(&t,rbuf,nb); mpack_tree_parse(&t);
+        mpack_node_t root=mpack_tree_root(&t);
+        char type[64]="",from[SNAME_MAX]="";
+        get_str(root,"type",type,sizeof(type)); get_str(root,"name",from,sizeof(from));
+        tick_recv(get_ll(root,"clock")); mpack_tree_destroy(&t);
+
+        char *resp=NULL; size_t rsz=0; mpack_writer_t w;
+        if(strcmp(type,"get_time")==0){
+            mpack_writer_init_growable(&w,&resp,&rsz);
+            mpack_start_map(&w,4);
+            mpack_write_cstr(&w,"status");    mpack_write_cstr(&w,"ok");
+            mpack_write_cstr(&w,"time");      mpack_write_double(&w,now_ts());
+            mpack_write_cstr(&w,"clock");     mpack_write_i64(&w,tick_send());
+            mpack_write_cstr(&w,"timestamp"); mpack_write_double(&w,now_ts());
+            mpack_finish_map(&w); mpack_writer_destroy(&w);
+            printf("[%s] S2S get_time | from=%s | time=%.3f\n",server_name,from,now_ts()); fflush(stdout);
+        } else if(strcmp(type,"election")==0){
+            mpack_writer_init_growable(&w,&resp,&rsz);
+            mpack_start_map(&w,4);
+            mpack_write_cstr(&w,"status");    mpack_write_cstr(&w,"ok");
+            mpack_write_cstr(&w,"rank");      mpack_write_i64(&w,server_rank);
+            mpack_write_cstr(&w,"clock");     mpack_write_i64(&w,tick_send());
+            mpack_write_cstr(&w,"timestamp"); mpack_write_double(&w,now_ts());
+            mpack_finish_map(&w); mpack_writer_destroy(&w);
+            printf("[%s] S2S election | from=%s | rank=%d\n",server_name,from,server_rank); fflush(stdout);
+        } else {
+            mpack_writer_init_growable(&w,&resp,&rsz);
+            mpack_start_map(&w,2);
+            mpack_write_cstr(&w,"status");  mpack_write_cstr(&w,"error");
+            mpack_write_cstr(&w,"message"); mpack_write_cstr(&w,"Unknown S2S");
+            mpack_finish_map(&w); mpack_writer_destroy(&w);
+        }
+        zmq_send(sock,resp,rsz,0); free(resp);
+    }
+    return NULL;
+}
+
+// ── thread SUB 'servers' ──────────────────────────────────────────────────────
+static void *servers_sub_thread(void *arg) {
+    void *ctx=zmq_ctx_new(); void *sub=zmq_socket(ctx,ZMQ_SUB);
+    char addr[128]; snprintf(addr,sizeof(addr),"tcp://%s:%s",proxy_host,xpub_port);
+    zmq_connect(sub,addr); usleep(500000);
+    zmq_setsockopt(sub,ZMQ_SUBSCRIBE,"servers",7);
+    printf("[%s] SUB listening on 'servers' topic\n",server_name); fflush(stdout);
+    static char tbuf[256],dbuf[MAX_BUF];
+    while(1){
+        int t=zmq_recv(sub,tbuf,sizeof(tbuf)-1,0); if(t<0) continue; tbuf[t]='\0';
+        int d=zmq_recv(sub,dbuf,MAX_BUF-1,0); if(d<0) continue;
+        mpack_tree_t tree; mpack_tree_init_data(&tree,dbuf,d); mpack_tree_parse(&tree);
+        mpack_node_t root=mpack_tree_root(&tree);
+        tick_recv(get_ll(root,"clock"));
+        char new_coord[SNAME_MAX]="";
+        get_str(root,"coordinator",new_coord,sizeof(new_coord));
+        if(new_coord[0]){
+            pthread_mutex_lock(&coord_mu); strncpy(coordinator,new_coord,SNAME_MAX); pthread_mutex_unlock(&coord_mu);
+            printf("[%s] New coordinator: '%s'\n",server_name,new_coord); fflush(stdout);
+        }
         mpack_tree_destroy(&tree);
     }
-    zmq_close(sock);
+    return NULL;
 }
 
-static char *make_resp(const char *status, const char *message, char **data, int data_len,
-                        long long clk, size_t *out_size) {
-    char *buf = NULL;
-    mpack_writer_t writer;
-    mpack_writer_init_growable(&writer, &buf, out_size);
-    int fields = (data != NULL) ? 5 : 4;
-    mpack_start_map(&writer, fields);
-    mpack_write_cstr(&writer, "status");    mpack_write_cstr(&writer, status);
-    mpack_write_cstr(&writer, "message");   mpack_write_cstr(&writer, message);
-    mpack_write_cstr(&writer, "clock");     mpack_write_i64(&writer, clk);
-    mpack_write_cstr(&writer, "timestamp"); mpack_write_double(&writer, now_ts());
-    if (data != NULL) {
-        mpack_write_cstr(&writer, "data");
-        mpack_start_array(&writer, data_len);
-        for (int i=0; i<data_len; i++) mpack_write_cstr(&writer, data[i]);
-        mpack_finish_array(&writer);
-    }
-    mpack_finish_map(&writer);
-    mpack_writer_destroy(&writer);
-    return buf;
+// ── make_resp / handlers clientes ────────────────────────────────────────────
+static char *make_resp(const char *status, const char *message, char **data, int data_len, size_t *out_size) {
+    char *buf=NULL; mpack_writer_t w; mpack_writer_init_growable(&w,&buf,out_size);
+    int fields=(data?5:4);
+    mpack_start_map(&w,fields);
+    mpack_write_cstr(&w,"status");    mpack_write_cstr(&w,status);
+    mpack_write_cstr(&w,"message");   mpack_write_cstr(&w,message);
+    mpack_write_cstr(&w,"clock");     mpack_write_i64(&w,tick_send());
+    mpack_write_cstr(&w,"timestamp"); mpack_write_double(&w,now_ts());
+    if(data){ mpack_write_cstr(&w,"data"); mpack_start_array(&w,data_len);
+        for(int i=0;i<data_len;i++) mpack_write_cstr(&w,data[i]); mpack_finish_array(&w); }
+    mpack_finish_map(&w); mpack_writer_destroy(&w); return buf;
 }
 
 static char *handle_login(const char *username, size_t *out) {
-    if (!username[0]) return make_resp("error","Username cannot be empty",NULL,0,tick_send(),out);
+    if(!username[0]) return make_resp("error","Username cannot be empty",NULL,0,out);
     sqlite3_stmt *s;
-    sqlite3_prepare_v2(db,"INSERT OR IGNORE INTO users (username,created_at) VALUES (?,?)",-1,&s,NULL);
-    sqlite3_bind_text(s,1,username,-1,SQLITE_STATIC); sqlite3_bind_double(s,2,now_ts());
-    sqlite3_step(s); sqlite3_finalize(s);
-    sqlite3_prepare_v2(db,"INSERT INTO logins (username,timestamp) VALUES (?,?)",-1,&s,NULL);
-    sqlite3_bind_text(s,1,username,-1,SQLITE_STATIC); sqlite3_bind_double(s,2,now_ts());
-    sqlite3_step(s); sqlite3_finalize(s);
+    sqlite3_prepare_v2(db,"INSERT OR IGNORE INTO users (username,created_at) VALUES(?,?)",-1,&s,NULL);
+    sqlite3_bind_text(s,1,username,-1,SQLITE_STATIC); sqlite3_bind_double(s,2,now_ts()); sqlite3_step(s); sqlite3_finalize(s);
+    sqlite3_prepare_v2(db,"INSERT INTO logins (username,timestamp) VALUES(?,?)",-1,&s,NULL);
+    sqlite3_bind_text(s,1,username,-1,SQLITE_STATIC); sqlite3_bind_double(s,2,now_ts()); sqlite3_step(s); sqlite3_finalize(s);
     char msg[256]; snprintf(msg,sizeof(msg),"Welcome, %s!",username);
-    return make_resp("ok",msg,NULL,0,tick_send(),out);
+    return make_resp("ok",msg,NULL,0,out);
 }
-
 static char *handle_create_channel(const char *name, const char *by, size_t *out) {
-    if (!name[0]) return make_resp("error","Channel name cannot be empty",NULL,0,tick_send(),out);
+    if(!name[0]) return make_resp("error","Channel name cannot be empty",NULL,0,out);
     sqlite3_stmt *s;
-    sqlite3_prepare_v2(db,"INSERT INTO channels (name,created_by,created_at) VALUES (?,?,?)",-1,&s,NULL);
-    sqlite3_bind_text(s,1,name,-1,SQLITE_STATIC); sqlite3_bind_text(s,2,by,-1,SQLITE_STATIC);
-    sqlite3_bind_double(s,3,now_ts());
-    int rc = sqlite3_step(s); sqlite3_finalize(s);
-    if (rc==SQLITE_CONSTRAINT) {
-        char msg[128]; snprintf(msg,sizeof(msg),"Channel '%s' already exists",name);
-        return make_resp("error",msg,NULL,0,tick_send(),out);
-    }
-    char msg[128]; snprintf(msg,sizeof(msg),"Channel '%s' created!",name);
-    return make_resp("ok",msg,NULL,0,tick_send(),out);
+    sqlite3_prepare_v2(db,"INSERT INTO channels (name,created_by,created_at) VALUES(?,?,?)",-1,&s,NULL);
+    sqlite3_bind_text(s,1,name,-1,SQLITE_STATIC); sqlite3_bind_text(s,2,by,-1,SQLITE_STATIC); sqlite3_bind_double(s,3,now_ts());
+    int rc=sqlite3_step(s); sqlite3_finalize(s);
+    if(rc==SQLITE_CONSTRAINT){ char m[128]; snprintf(m,sizeof(m),"Channel '%s' already exists",name); return make_resp("error",m,NULL,0,out); }
+    char m[128]; snprintf(m,sizeof(m),"Channel '%s' created!",name); return make_resp("ok",m,NULL,0,out);
 }
-
-static char *handle_list(size_t *out) {
-    sqlite3_stmt *s;
-    sqlite3_prepare_v2(db,"SELECT name FROM channels ORDER BY created_at",-1,&s,NULL);
+static char *handle_list_channels(size_t *out) {
+    sqlite3_stmt *s; sqlite3_prepare_v2(db,"SELECT name FROM channels ORDER BY created_at",-1,&s,NULL);
     char *names[256]; int count=0;
-    while(sqlite3_step(s)==SQLITE_ROW && count<256)
-        names[count++] = strdup((const char*)sqlite3_column_text(s,0));
+    while(sqlite3_step(s)==SQLITE_ROW&&count<256) names[count++]=strdup((const char*)sqlite3_column_text(s,0));
     sqlite3_finalize(s);
-    char *resp = make_resp("ok","OK",names,count,tick_send(),out);
-    for(int i=0;i<count;i++) free(names[i]);
-    return resp;
+    char *resp=make_resp("ok","OK",names,count,out);
+    for(int i=0;i<count;i++) free(names[i]); return resp;
 }
-
-static char *handle_publish(const char *ch, const char *user, const char *msg,
-                             double ts, long long recv_clk, size_t *out) {
-    if (!ch[0]||!msg[0]) return make_resp("error","Channel and message required",NULL,0,tick_send(),out);
-    sqlite3_stmt *chk;
-    sqlite3_prepare_v2(db,"SELECT name FROM channels WHERE name=?",-1,&chk,NULL);
-    sqlite3_bind_text(chk,1,ch,-1,SQLITE_STATIC);
+static char *handle_publish(const char *channel, const char *username, const char *message, long long msg_clock, size_t *out) {
+    if(!channel[0]||!message[0]) return make_resp("error","Channel and message required",NULL,0,out);
+    sqlite3_stmt *chk; sqlite3_prepare_v2(db,"SELECT name FROM channels WHERE name=?",-1,&chk,NULL);
+    sqlite3_bind_text(chk,1,channel,-1,SQLITE_STATIC);
     int exists=(sqlite3_step(chk)==SQLITE_ROW); sqlite3_finalize(chk);
-    if(!exists) {
-        char em[128]; snprintf(em,sizeof(em),"Channel '%s' does not exist",ch);
-        return make_resp("error",em,NULL,0,tick_send(),out);
-    }
+    if(!exists){ char m[128]; snprintf(m,sizeof(m),"Channel '%s' does not exist",channel); return make_resp("error",m,NULL,0,out); }
     sqlite3_stmt *ins;
-    sqlite3_prepare_v2(db,"INSERT INTO messages (channel,username,message,timestamp,clock) VALUES (?,?,?,?,?)",-1,&ins,NULL);
-    sqlite3_bind_text(ins,1,ch,-1,SQLITE_STATIC); sqlite3_bind_text(ins,2,user,-1,SQLITE_STATIC);
-    sqlite3_bind_text(ins,3,msg,-1,SQLITE_STATIC); sqlite3_bind_double(ins,4,ts);
-    sqlite3_bind_int64(ins,5,recv_clk);
+    sqlite3_prepare_v2(db,"INSERT INTO messages (channel,username,message,timestamp,clock) VALUES(?,?,?,?,?)",-1,&ins,NULL);
+    sqlite3_bind_text(ins,1,channel,-1,SQLITE_STATIC); sqlite3_bind_text(ins,2,username,-1,SQLITE_STATIC);
+    sqlite3_bind_text(ins,3,message,-1,SQLITE_STATIC); sqlite3_bind_double(ins,4,now_ts()); sqlite3_bind_int64(ins,5,msg_clock);
     sqlite3_step(ins); sqlite3_finalize(ins);
-
-    long long pub_clk = tick_send();
-    char *pb=NULL; size_t pb_sz=0;
-    mpack_writer_t pw; mpack_writer_init_growable(&pw,&pb,&pb_sz);
-    mpack_start_map(&pw,6);
-    mpack_write_cstr(&pw,"channel");   mpack_write_cstr(&pw,ch);
-    mpack_write_cstr(&pw,"username");  mpack_write_cstr(&pw,user);
-    mpack_write_cstr(&pw,"message");   mpack_write_cstr(&pw,msg);
-    mpack_write_cstr(&pw,"timestamp"); mpack_write_double(&pw,ts);
-    mpack_write_cstr(&pw,"received");  mpack_write_double(&pw,now_ts());
-    mpack_write_cstr(&pw,"clock");     mpack_write_i64(&pw,pub_clk);
-    mpack_finish_map(&pw); mpack_writer_destroy(&pw);
-    zmq_send(pub_socket,ch,strlen(ch),ZMQ_SNDMORE);
-    zmq_send(pub_socket,pb,pb_sz,0);
-    free(pb);
-    printf("[%s] PUB  | channel=%-15s | from=%-12s | clock=%lld | %s\n",server_name,ch,user,pub_clk,msg);
-    fflush(stdout);
-    return make_resp("ok","Published!",NULL,0,tick_send(),out);
+    long long clk=tick_send();
+    char *pbuf=NULL; size_t psz=0; mpack_writer_t w;
+    mpack_writer_init_growable(&w,&pbuf,&psz);
+    mpack_start_map(&w,6);
+    mpack_write_cstr(&w,"channel");   mpack_write_cstr(&w,channel);
+    mpack_write_cstr(&w,"username");  mpack_write_cstr(&w,username);
+    mpack_write_cstr(&w,"message");   mpack_write_cstr(&w,message);
+    mpack_write_cstr(&w,"timestamp"); mpack_write_double(&w,now_ts());
+    mpack_write_cstr(&w,"received");  mpack_write_double(&w,now_ts());
+    mpack_write_cstr(&w,"clock");     mpack_write_i64(&w,clk);
+    mpack_finish_map(&w); mpack_writer_destroy(&w);
+    zmq_send(pub_socket,channel,strlen(channel),ZMQ_SNDMORE);
+    zmq_send(pub_socket,pbuf,psz,0); free(pbuf);
+    printf("[%s] PUB  | channel=%-15s | from=%-12s | clock=%lld | msg=%s\n",server_name,channel,username,clk,message); fflush(stdout);
+    return make_resp("ok","Published!",NULL,0,out);
 }
 
 int main(void) {
-    const char *pe = getenv("PORT"); int port = pe ? atoi(pe) : 5553;
-    const char *ph = getenv("PROXY_HOST"); if(!ph) ph="proxy";
-    const char *xp = getenv("XSUB_PORT"); if(!xp) xp="5557";
-    const char *sn = getenv("SERVER_NAME"); if(sn) strncpy(server_name,sn,sizeof(server_name)-1);
-    const char *rh = getenv("REF_HOST"); if(rh) strncpy(ref_host,rh,sizeof(ref_host)-1);
-    const char *rp = getenv("REF_PORT"); if(rp) strncpy(ref_port,rp,sizeof(ref_port)-1);
+    const char *sn=getenv("SERVER_NAME"); snprintf(server_name,SNAME_MAX,"%s",sn?sn:"server-c");
+    const char *pe=getenv("PORT"); int port=pe?atoi(pe):5553;
+    const char *sp=getenv("S2S_PORT"); snprintf(s2s_port_str,16,"%s",sp?sp:"5563");
+    const char *ph=getenv("PROXY_HOST"); snprintf(proxy_host,64,"%s",ph?ph:"proxy");
+    const char *xs=getenv("XSUB_PORT"); snprintf(xsub_port,16,"%s",xs?xs:"5557");
+    const char *xp=getenv("XPUB_PORT"); snprintf(xpub_port,16,"%s",xp?xp:"5558");
+    const char *rh=getenv("REF_HOST"); snprintf(ref_host,64,"%s",rh?rh:"reference");
+    const char *rp=getenv("REF_PORT"); snprintf(ref_port,16,"%s",rp?rp:"5559");
 
     init_db();
-    zmq_ctx = zmq_ctx_new();
-    sleep(2);
-    call_reference("register", -1);
+    ctx_global=zmq_ctx_new();
 
-    void *rep = zmq_socket(zmq_ctx,ZMQ_REP);
-    char addr[64]; snprintf(addr,sizeof(addr),"tcp://*:%d",port);
-    zmq_bind(rep,addr);
-
-    pub_socket = zmq_socket(zmq_ctx,ZMQ_PUB);
-    char pub_addr[128]; snprintf(pub_addr,sizeof(pub_addr),"tcp://%s:%s",ph,xp);
+    pub_socket=zmq_socket(ctx_global,ZMQ_PUB);
+    char pub_addr[128]; snprintf(pub_addr,sizeof(pub_addr),"tcp://%s:%s",proxy_host,xsub_port);
     zmq_connect(pub_socket,pub_addr);
-    struct timespec ts0={0,500000000}; nanosleep(&ts0,NULL);
+    sleep(1);
 
+    sleep(2); connect_to_reference(); get_server_list();
+
+    pthread_t t1,t2;
+    pthread_create(&t1,NULL,s2s_server_thread,NULL);
+    pthread_create(&t2,NULL,servers_sub_thread,NULL);
+    pthread_detach(t1); pthread_detach(t2);
+    sleep(1);
+    start_election();
+
+    void *rep_socket=zmq_socket(ctx_global,ZMQ_REP);
+    char rep_addr[64]; snprintf(rep_addr,sizeof(rep_addr),"tcp://*:%d",port);
+    zmq_bind(rep_socket,rep_addr);
     printf("[%s] Listening on port %d | rank=%d\n",server_name,port,server_rank); fflush(stdout);
 
-    static char recv_buf[MAX_BUF];
-    long long msg_count=0;
-    while(1) {
-        int nb=zmq_recv(rep,recv_buf,MAX_BUF-1,0); if(nb<0) continue;
-        mpack_tree_t tree;
-        mpack_tree_init_data(&tree,recv_buf,nb);
-        mpack_tree_parse(&tree);
+    static char recv_buf[MAX_BUF]; long msg_count=0;
+    while(1){
+        int nb=zmq_recv(rep_socket,recv_buf,MAX_BUF-1,0); if(nb<0) continue;
+        mpack_tree_t tree; mpack_tree_init_data(&tree,recv_buf,nb); mpack_tree_parse(&tree);
         mpack_node_t root=mpack_tree_root(&tree);
-
-        char type[64],username[256],channel[256],message[1024];
-        get_str(root,"type",type,sizeof(type));
-        get_str(root,"username",username,sizeof(username));
-        get_str(root,"channel_name",channel,sizeof(channel));
-        get_str(root,"message",message,sizeof(message));
-        double recv_ts=get_double(root,"timestamp");
-        long long recv_clk=get_int(root,"clock");
-        mpack_tree_destroy(&tree);
-
-        tick_recv(recv_clk); msg_count++;
-        printf("[%s] RECV | type=%-10s | from=%-12s | clock=%lld | lc=%lld\n",
-               server_name,type,username,recv_clk,logical_clock); fflush(stdout);
-
+        char type[64]="",username[256]="",channel_name[256]="",message[1024]="";
+        get_str(root,"type",type,sizeof(type)); get_str(root,"username",username,sizeof(username));
+        get_str(root,"channel_name",channel_name,sizeof(channel_name)); get_str(root,"message",message,sizeof(message));
+        long long clk_in=get_ll(root,"clock"); mpack_tree_destroy(&tree);
+        tick_recv(clk_in); msg_count++;
+        printf("[%s] RECV | type=%-10s | from=%-12s | clock=%lld | lc=%lld\n",server_name,type,username,clk_in,logical_clock); fflush(stdout);
         size_t rsz=0; char *rbuf=NULL;
-        if      (!strcmp(type,"login"))   rbuf=handle_login(username,&rsz);
-        else if (!strcmp(type,"channel")) rbuf=handle_create_channel(channel,username,&rsz);
-        else if (!strcmp(type,"list"))    rbuf=handle_list(&rsz);
-        else if (!strcmp(type,"publish")) rbuf=handle_publish(channel,username,message,recv_ts,recv_clk,&rsz);
-        else { char em[128]; snprintf(em,sizeof(em),"Unknown: %s",type); rbuf=make_resp("error",em,NULL,0,tick_send(),&rsz); }
-
-        zmq_send(rep,rbuf,rsz,0); free(rbuf);
-
-        if(msg_count%10==0) call_reference("heartbeat",msg_count);
+        if     (strcmp(type,"login"  )==0) rbuf=handle_login(username,&rsz);
+        else if(strcmp(type,"channel")==0) rbuf=handle_create_channel(channel_name,username,&rsz);
+        else if(strcmp(type,"list"   )==0) rbuf=handle_list_channels(&rsz);
+        else if(strcmp(type,"publish")==0) rbuf=handle_publish(channel_name,username,message,clk_in,&rsz);
+        else { char em[128]; snprintf(em,sizeof(em),"Unknown: %s",type); rbuf=make_resp("error",em,NULL,0,&rsz); }
+        zmq_send(rep_socket,rbuf,rsz,0); free(rbuf);
+        if(msg_count%15==0){ send_heartbeat(); sync_with_coordinator(); }
     }
     return 0;
 }

@@ -1,16 +1,5 @@
 services:
 
-  # ==================== REFERÊNCIA ====================
-  reference:
-    build: ./reference
-    container_name: reference
-    environment:
-      - REF_PORT=5559
-      - HEARTBEAT_TIMEOUT=30
-    networks:
-      - bbs-net
-
-  # ==================== PROXY PUB/SUB ====================
   proxy:
     build: ./proxy
     container_name: proxy
@@ -20,22 +9,30 @@ services:
     networks:
       - bbs-net
 
-  # ==================== PYTHON ====================
+  reference:
+    build: ./reference
+    container_name: reference
+    environment:
+      - REF_PORT=5559
+      - HEARTBEAT_TIMEOUT=30
+    networks:
+      - bbs-net
+
   server-python:
     build: ./server-python
     container_name: server-python
     environment:
       - PORT=5550
+      - S2S_PORT=5560
+      - SERVER_NAME=server-python
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - XPUB_PORT=5558
       - REF_HOST=reference
       - REF_PORT=5559
-      - SERVER_NAME=server-python
     volumes:
       - data-python:/data
-    depends_on:
-      - proxy
-      - reference
+    depends_on: [proxy, reference]
     networks:
       - bbs-net
 
@@ -48,8 +45,7 @@ services:
       - SERVER_PORT=5550
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-python
+    depends_on: [server-python]
     networks:
       - bbs-net
 
@@ -62,27 +58,25 @@ services:
       - SERVER_PORT=5550
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-python
+    depends_on: [server-python]
     networks:
       - bbs-net
 
-  # ==================== GO ====================
   server-go:
     build: ./server-go
     container_name: server-go
     environment:
       - PORT=5551
+      - S2S_PORT=5561
+      - SERVER_NAME=server-go
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - XPUB_PORT=5558
       - REF_HOST=reference
       - REF_PORT=5559
-      - SERVER_NAME=server-go
     volumes:
       - data-go:/data
-    depends_on:
-      - proxy
-      - reference
+    depends_on: [proxy, reference]
     networks:
       - bbs-net
 
@@ -95,8 +89,7 @@ services:
       - SERVER_PORT=5551
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-go
+    depends_on: [server-go]
     networks:
       - bbs-net
 
@@ -109,27 +102,25 @@ services:
       - SERVER_PORT=5551
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-go
+    depends_on: [server-go]
     networks:
       - bbs-net
 
-  # ==================== C# ====================
   server-csharp:
     build: ./server-csharp
     container_name: server-csharp
     environment:
       - PORT=5552
+      - S2S_PORT=5562
+      - SERVER_NAME=server-csharp
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - XPUB_PORT=5558
       - REF_HOST=reference
       - REF_PORT=5559
-      - SERVER_NAME=server-csharp
     volumes:
       - data-csharp:/data
-    depends_on:
-      - proxy
-      - reference
+    depends_on: [proxy, reference]
     networks:
       - bbs-net
 
@@ -142,8 +133,7 @@ services:
       - SERVER_PORT=5552
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-csharp
+    depends_on: [server-csharp]
     networks:
       - bbs-net
 
@@ -156,27 +146,25 @@ services:
       - SERVER_PORT=5552
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-csharp
+    depends_on: [server-csharp]
     networks:
       - bbs-net
 
-  # ==================== C ====================
   server-c:
     build: ./server-c
     container_name: server-c
     environment:
       - PORT=5553
+      - S2S_PORT=5563
+      - SERVER_NAME=server-c
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - XPUB_PORT=5558
       - REF_HOST=reference
       - REF_PORT=5559
-      - SERVER_NAME=server-c
     volumes:
       - data-c:/data
-    depends_on:
-      - proxy
-      - reference
+    depends_on: [proxy, reference]
     networks:
       - bbs-net
 
@@ -189,8 +177,7 @@ services:
       - SERVER_PORT=5553
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-c
+    depends_on: [server-c]
     networks:
       - bbs-net
 
@@ -203,27 +190,25 @@ services:
       - SERVER_PORT=5553
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-c
+    depends_on: [server-c]
     networks:
       - bbs-net
 
-  # ==================== LUA ====================
   server-lua:
     build: ./server-lua
     container_name: server-lua
     environment:
       - PORT=5554
+      - S2S_PORT=5564
+      - SERVER_NAME=server-lua
       - PROXY_HOST=proxy
       - XSUB_PORT=5557
+      - XPUB_PORT=5558
       - REF_HOST=reference
       - REF_PORT=5559
-      - SERVER_NAME=server-lua
     volumes:
       - data-lua:/data
-    depends_on:
-      - proxy
-      - reference
+    depends_on: [proxy, reference]
     networks:
       - bbs-net
 
@@ -236,8 +221,7 @@ services:
       - SERVER_PORT=5554
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-lua
+    depends_on: [server-lua]
     networks:
       - bbs-net
 
@@ -250,8 +234,7 @@ services:
       - SERVER_PORT=5554
       - PROXY_HOST=proxy
       - XPUB_PORT=5558
-    depends_on:
-      - server-lua
+    depends_on: [server-lua]
     networks:
       - bbs-net
 
